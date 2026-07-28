@@ -1,0 +1,39 @@
+name: Windows 构建
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 x64 工程
+        run: cmake -S . -B build -A x64
+
+      - name: 编译 Release
+        run: cmake --build build --config Release --parallel
+
+      - name: 校验构建产物
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-build.ps1
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: vape-v4-controller-windows-x64
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            build/Release/vape_v4_rewrite.exe
+            build/Release/assets/

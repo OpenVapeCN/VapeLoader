@@ -1,0 +1,66 @@
+name: 行为或视觉差异
+description: 报告原程序与重构程序之间可复现的差异
+title: "[差异] "
+labels: ["evidence-needed"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请提供可核验的反编译或运行时证据。第三方文章只能作为定位线索。
+  - type: dropdown
+    id: area
+    attributes:
+      label: 差异范围
+      options:
+        - 页面布局
+        - 动画或时间轴
+        - 页面状态机
+        - 浏览器认证
+        - Minecraft 进程发现
+        - 加载或缓存流程
+        - 本地控制服务
+        - 注入协调
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: 实际表现
+      description: 描述重构程序当前表现以及稳定复现步骤。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 原程序表现
+      description: 描述原程序行为，并附截图、状态或采样时间。
+    validations:
+      required: true
+  - type: input
+    id: address
+    attributes:
+      label: 反编译地址
+      placeholder: "例如 FUN_14003E900 @ 0x14003E900"
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据
+      description: 附上脱敏后的伪代码、截图路径、RVA 或运行记录。
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 环境
+      placeholder: "Windows 版本、DPI、显示缩放、构建哈希"
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 安全确认
+      options:
+        - label: 我已移除账号、令牌、challenge 和个人信息
+          required: true
+        - label: 我没有上传完整内存 dump、原始 EXE、DLL 或 Java 客户端
+          required: true
