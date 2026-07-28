@@ -24,31 +24,65 @@ finally {
     $stream.Dispose()
 }
 
-$requiredAssets = @(
-    'close.png',
-    'logo.png',
-    'mask-bottom.png',
-    'mask-left.png',
-    'mask-right.png',
-    'mask-top.png',
-    'minimize.png',
-    'proxima-regular.ttf',
-    'proxima-semibold.otf',
-    'rounded-rect.png'
-)
+if (-not ('Vape421ResourceVerifier' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
 
-$missing = foreach ($asset in $requiredAssets) {
-    $path = Join-Path $BuildDirectory "assets\$asset"
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        $asset
-    }
+public static class Vape421ResourceVerifier {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr LoadLibraryEx(string fileName, IntPtr file, uint flags);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr FindResource(IntPtr module, IntPtr name, IntPtr type);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint SizeofResource(IntPtr module, IntPtr resource);
+
+    [DllImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool FreeLibrary(IntPtr module);
+}
+'@
 }
 
-if ($missing) {
-    throw "Build output is missing assets: $($missing -join ', ')"
+$assetRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\assets'))
+$requiredAssets = [ordered]@{
+    101 = 'close.png'
+    102 = 'logo.png'
+    103 = 'mask-bottom.png'
+    104 = 'mask-left.png'
+    105 = 'mask-right.png'
+    106 = 'mask-top.png'
+    107 = 'minimize.png'
+    108 = 'proxima-regular.ttf'
+    109 = 'proxima-semibold.otf'
+    110 = 'rounded-rect.png'
+}
+
+$module = [Vape421ResourceVerifier]::LoadLibraryEx($executable, [IntPtr]::Zero, 2)
+if ($module -eq [IntPtr]::Zero) {
+    throw "Unable to inspect executable resources: $executable"
+}
+try {
+    foreach ($entry in $requiredAssets.GetEnumerator()) {
+        $resource = [Vape421ResourceVerifier]::FindResource(
+            $module, [IntPtr]$entry.Key, [IntPtr]10)
+        if ($resource -eq [IntPtr]::Zero) {
+            throw "Embedded asset is missing: $($entry.Value)"
+        }
+        $expectedSize = (Get-Item -LiteralPath (Join-Path $assetRoot $entry.Value)).Length
+        $actualSize = [Vape421ResourceVerifier]::SizeofResource($module, $resource)
+        if ($actualSize -ne $expectedSize) {
+            throw "Embedded asset size mismatch: $($entry.Value)"
+        }
+    }
+}
+finally {
+    [void][Vape421ResourceVerifier]::FreeLibrary($module)
 }
 
 $hash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash
 Write-Host "Build verification passed: $executable"
 Write-Host "SHA-256: $hash"
-Write-Host "Asset count: $($requiredAssets.Count)"
+Write-Host "Embedded asset count: $($requiredAssets.Count)"

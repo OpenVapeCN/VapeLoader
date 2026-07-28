@@ -16,6 +16,47 @@
 namespace {
 constexpr UINT WM_CONTROLLER_STATE = WM_APP + 41;
 
+std::wstring onlineBaseUrl() {
+    wchar_t value[2048]{};
+    const DWORD length = GetEnvironmentVariableW(L"VAPE_ONLINE_BASE_URL", value,
+        static_cast<DWORD>(std::size(value)));
+    std::wstring result = length > 0 && length < std::size(value)
+        ? std::wstring(value, length) : L"http://127.0.0.1:8080";
+    while (!result.empty() && result.back() == L'/') result.pop_back();
+    return result;
+}
+
+std::string utf8(const std::wstring& value) {
+    if (value.empty()) return {};
+    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (size <= 0) return {};
+    std::string result(static_cast<std::size_t>(size), '\0');
+    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+        static_cast<int>(value.size()), result.data(), size, nullptr, nullptr);
+    return result;
+}
+
+std::string jsonEscape(const std::string& value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const unsigned char character : value) {
+        switch (character) {
+        case '\\': result += "\\\\"; break;
+        case '"': result += "\\\""; break;
+        case '\b': result += "\\b"; break;
+        case '\f': result += "\\f"; break;
+        case '\n': result += "\\n"; break;
+        case '\r': result += "\\r"; break;
+        case '\t': result += "\\t"; break;
+        default:
+            if (character >= 0x20) result.push_back(static_cast<char>(character));
+            break;
+        }
+    }
+    return result;
+}
+
 std::wstring processTitle(DWORD pid) {
     struct Search {
         DWORD pid;
@@ -49,6 +90,7 @@ std::wstring executableDirectory() {
 }
 
 ControllerModel::ControllerModel() {
+    serviceHttpBase_ = onlineBaseUrl();
     const std::wstring setting = cacheDirectory() + L"cache.preference";
     std::wifstream input(setting);
     int enabled = 0;
@@ -125,19 +167,23 @@ void ControllerModel::refreshMinecraftProcesses() {
 
 bool ControllerModel::injectMinecraft(std::uint32_t processId) {
     std::string token;
+    std::string serviceHttpBase;
     {
         std::lock_guard lock(mutex_);
         token = accessToken_;
+        serviceHttpBase = utf8(serviceHttpBase_);
     }
-    if (!service_.start(std::move(token), cachePreference_, true)) {
-        setStatus(L"Failed to create local controller service");
+    if (!service_.start(token, cachePreference_, true)) {
+        setStatus(L"Failed to create the Loader controller socket");
         setPage(ControllerPage::Error);
         return false;
     }
     std::wstring error;
-    const std::wstring dllPath = executableDirectory() + L"\\vape_v4.dll";
-    if (!InjectionCoordinator::injectReflectiveDll(processId, dllPath, service_.port(), error)) {
-        setStatus(L"Failed to inject\nUse a supported Minecraft version and client listed on the FAQ of the website");
+    const std::wstring dllPath = executableDirectory() + L"\\Vape421Native.dll";
+    if (!InjectionCoordinator::injectProductDll(processId, dllPath, service_.port(),
+            serviceHttpBase, error)) {
+        service_.stop();
+        setStatus(error.empty() ? L"Failed to inject Vape421Native.dll" : error);
         setPage(ControllerPage::Error);
         return false;
     }
@@ -147,12 +193,17 @@ bool ControllerModel::injectMinecraft(std::uint32_t processId) {
             injectedProcesses_.end()) {
             injectedProcesses_.push_back(processId);
         }
-        loadingStage_ = 0;
+        if (!accessToken_.empty()) {
+            SecureZeroMemory(accessToken_.data(), accessToken_.size());
+            accessToken_.clear();
+        }
+        loadingStage_ = service_.stage();
         loadingStarted_ = std::chrono::steady_clock::now();
         stageStarted_ = loadingStarted_;
         page_ = ControllerPage::Loading;
         status_.clear();
     }
+    if (!token.empty()) SecureZeroMemory(token.data(), token.size());
     return true;
 }
 
@@ -187,6 +238,56 @@ std::string ControllerModel::httpPost(const wchar_t* host, const wchar_t* path,
             DWORD read = 0;
             if (!WinHttpReadData(request, response.data() + offset, available, &read)) break;
             response.resize(offset + read);
+        }
+    }
+    if (request) WinHttpCloseHandle(request);
+    if (connection) WinHttpCloseHandle(connection);
+    WinHttpCloseHandle(session);
+    return response;
+}
+
+std::string ControllerModel::httpPostJson(const std::wstring& baseUrl,
+                                          const wchar_t* path,
+                                          const std::string& body) {
+    URL_COMPONENTS components{};
+    components.dwStructSize = sizeof(components);
+    components.dwSchemeLength = static_cast<DWORD>(-1);
+    components.dwHostNameLength = static_cast<DWORD>(-1);
+    components.dwUrlPathLength = static_cast<DWORD>(-1);
+    if (!WinHttpCrackUrl(baseUrl.c_str(), 0, 0, &components) ||
+            components.dwHostNameLength == 0) {
+        return {};
+    }
+    const std::wstring host(components.lpszHostName, components.dwHostNameLength);
+    HINTERNET session = WinHttpOpen(L"Vape4/Loader",
+        WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME,
+        WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) return {};
+    WinHttpSetTimeouts(session, 5000, 5000, 5000, 5000);
+    HINTERNET connection = WinHttpConnect(session, host.c_str(), components.nPort, 0);
+    const DWORD flags = components.nScheme == INTERNET_SCHEME_HTTPS
+        ? WINHTTP_FLAG_SECURE : 0;
+    HINTERNET request = connection ? WinHttpOpenRequest(connection, L"POST", path,
+        nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags) : nullptr;
+    std::string response;
+    const wchar_t* headers = L"Content-Type: application/json; charset=utf-8";
+    if (request && WinHttpSendRequest(request, headers, static_cast<DWORD>(-1L),
+            const_cast<char*>(body.data()), static_cast<DWORD>(body.size()),
+            static_cast<DWORD>(body.size()), 0) && WinHttpReceiveResponse(request, nullptr)) {
+        DWORD statusCode = 0;
+        DWORD statusSize = sizeof(statusCode);
+        if (WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE |
+                WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX) && statusCode == 200) {
+            for (;;) {
+                DWORD available = 0;
+                if (!WinHttpQueryDataAvailable(request, &available) || available == 0) break;
+                const auto offset = response.size();
+                response.resize(offset + available);
+                DWORD read = 0;
+                if (!WinHttpReadData(request, response.data() + offset, available, &read)) break;
+                response.resize(offset + read);
+            }
         }
     }
     if (request) WinHttpCloseHandle(request);
@@ -318,6 +419,14 @@ void ControllerModel::tick() {
     }
     if (service_.completed()) {
         setPage(cachePreference_ ? ControllerPage::LoadingComplete : ControllerPage::CachePrompt);
+    } else if (service_.failed()) {
+        const std::string detail = service_.error();
+        setStatus(detail.empty() ? L"Native loading connection closed unexpectedly"
+                                 : std::wstring(detail.begin(), detail.end()));
+        setPage(ControllerPage::Error);
+    } else if (loadingElapsedSeconds() >= 90.0) {
+        setStatus(L"Native loading timed out");
+        setPage(ControllerPage::Error);
     }
 }
 
@@ -339,7 +448,24 @@ double ControllerModel::stageElapsedSeconds() const {
 }
 
 void ControllerModel::submitCredentialAuthentication() {
-    // The original dispatches this request into the protected VM at FUN_140985d2d.
-    // Keep the UI responsive without inventing a wire protocol not present in the dump.
-    setStatus(L"Credential authentication is unavailable in the recovered VM boundary");
+    const std::wstring usernameValue = username_;
+    const std::string usernameUtf8 = utf8(usernameValue);
+    if (usernameUtf8.empty()) {
+        setStatus(L"Enter a username");
+        return;
+    }
+    const std::string response = httpPostJson(serviceHttpBase_, L"/loader/login",
+        "{\"username\":\"" + jsonEscape(usernameUtf8) + "\"}");
+    const std::string token = jsonString(response, "token");
+    if (token.empty()) {
+        setStatus(L"Unable to log in to the local Service");
+        return;
+    }
+    {
+        std::lock_guard lock(mutex_);
+        accessToken_ = token;
+        status_.clear();
+    }
+    refreshMinecraftProcesses();
+    setPage(ControllerPage::MinecraftSelection);
 }

@@ -59,6 +59,8 @@ private:
     static std::wstring makeHwid();
     static std::string httpPost(const wchar_t* host, const wchar_t* path,
         const std::string& body);
+    static std::string httpPostJson(const std::wstring& baseUrl,
+        const wchar_t* path, const std::string& body);
     static std::string jsonString(const std::string& json, const char* key);
 
     mutable std::mutex mutex_;
@@ -69,6 +71,7 @@ private:
     std::vector<MinecraftProcess> minecraftProcesses_;
     std::vector<std::uint32_t> injectedProcesses_;
     std::string accessToken_;
+    std::wstring serviceHttpBase_;
     std::wstring browserUrl_;
     LocalControllerService service_;
     std::atomic<bool> cancelAuth_{false};

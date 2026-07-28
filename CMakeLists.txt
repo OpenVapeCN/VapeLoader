@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(vape_v4_controller_rewrite LANGUAGES CXX)
+project(vape_v4_controller_rewrite LANGUAGES CXX RC)
 
 add_executable(vape_v4_rewrite WIN32
     src/main.cpp
@@ -9,8 +9,11 @@ add_executable(vape_v4_rewrite WIN32
     src/controller_ui.h
     src/injection_coordinator.cpp
     src/injection_coordinator.h
+    src/loader_bootstrap.h
     src/local_controller_service.cpp
     src/local_controller_service.h
+    src/resource_ids.h
+    assets.rc
     app.manifest
 )
 
@@ -30,9 +33,3 @@ if(MSVC)
         "/MANIFESTUAC:level='highestAvailable' uiAccess='false'"
     )
 endif()
-
-add_custom_command(TARGET vape_v4_rewrite POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets"
-        "$<TARGET_FILE_DIR:vape_v4_rewrite>/assets"
-)

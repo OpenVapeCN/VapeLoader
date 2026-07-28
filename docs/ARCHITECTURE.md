@@ -38,7 +38,7 @@
 4. 更新 Browser Auth 四格指示器；
 5. 请求重绘。
 
-Browser Auth 指示器依据 `FUN_14003F920 @ 0x14003F920` 每 20 ms 更新四个 alpha。加载进度依据 `FUN_14003D180 @ 0x14003D180` 向 `max(stage / 116, 0.05)` 逼近。
+Browser Auth 指示器依据 `FUN_14003F920 @ 0x14003F920` 每 20 ms 更新四个 alpha。加载进度依据 `FUN_14003D180 @ 0x14003D180` 向 `max(stage / 29, 0.05)` 逼近，轨道逻辑矩形为 `(292, 265, 240, 6)`。
 
 ## App Auth
 

@@ -1,14 +1,49 @@
 #include "injection_coordinator.h"
+#include "loader_bootstrap.h"
 
 #include <windows.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
 #include <vector>
 
 namespace {
+std::wstring bootstrapObjectName(const wchar_t* prefix, std::uint32_t processId) {
+    return std::wstring(L"Local\\Vape421.") + prefix + L"." + std::to_wstring(processId);
+}
+
+void copyText(char* destination, std::size_t capacity, const std::string& source) {
+    const std::size_t count = std::min(capacity - 1, source.size());
+    memcpy(destination, source.data(), count);
+    destination[count] = '\0';
+}
+
+bool zeusEndpoint(std::string& host, std::uint16_t& port) {
+    char configured[256]{};
+    const DWORD length = GetEnvironmentVariableA("VAPE_ZEUS_ADDRESS", configured,
+        static_cast<DWORD>(std::size(configured)));
+    const std::string address = length > 0 && length < std::size(configured)
+        ? std::string(configured, length) : "127.0.0.1:8091";
+    const auto separator = address.find_last_of(':');
+    if (separator == std::string::npos || separator == 0 ||
+            separator + 1 == address.size()) {
+        return false;
+    }
+    char* end = nullptr;
+    const std::string portText = address.substr(separator + 1);
+    const unsigned long parsedPort = strtoul(portText.c_str(), &end, 10);
+    host = address.substr(0, separator);
+    if (end == portText.c_str() || *end != '\0' || parsedPort == 0 ||
+            parsedPort > 65535 || host.size() >= sizeof(Vape421BootstrapV2::serviceZeusHost)) {
+        return false;
+    }
+    port = static_cast<std::uint16_t>(parsedPort);
+    return true;
+}
+
 bool enableDebugPrivilege() {
     HANDLE token = nullptr;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
@@ -64,6 +99,126 @@ DWORD reflectiveLoaderRva(const std::vector<unsigned char>& image) {
     }
     return 0;
 }
+}
+
+bool InjectionCoordinator::injectProductDll(std::uint32_t processId,
+    const std::wstring& dllPath, std::uint16_t controllerPort,
+    const std::string& serviceHttpBase, std::wstring& error) {
+    if (controllerPort == 0) {
+        error = L"Loader controller port is unavailable";
+        return false;
+    }
+    if (serviceHttpBase.empty() ||
+            serviceHttpBase.size() >= sizeof(Vape421BootstrapV2::serviceHttpBase)) {
+        error = L"VAPE_ONLINE_BASE_URL is too long for the bootstrap";
+        return false;
+    }
+    std::string serviceZeusHost;
+    std::uint16_t serviceZeusPort = 0;
+    if (!zeusEndpoint(serviceZeusHost, serviceZeusPort)) {
+        error = L"VAPE_ZEUS_ADDRESS must use host:port format";
+        return false;
+    }
+    if (GetFileAttributesW(dllPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        error = L"Vape421Native.dll was not found beside the Loader";
+        return false;
+    }
+
+    const std::wstring mappingName = bootstrapObjectName(L"Bootstrap", processId);
+    const std::wstring ackName = bootstrapObjectName(L"BootstrapAck", processId);
+    HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+        0, sizeof(Vape421BootstrapV2), mappingName.c_str());
+    if (!mapping || GetLastError() == ERROR_ALREADY_EXISTS) {
+        error = L"A Loader bootstrap already exists for this process";
+        if (mapping) CloseHandle(mapping);
+        return false;
+    }
+    auto* block = static_cast<Vape421BootstrapV2*>(MapViewOfFile(mapping,
+        FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Vape421BootstrapV2)));
+    HANDLE ack = CreateEventW(nullptr, TRUE, FALSE, ackName.c_str());
+    const bool ackAlreadyExists = ack && GetLastError() == ERROR_ALREADY_EXISTS;
+    if (!block || !ack || ackAlreadyExists) {
+        error = L"Failed to create the Loader bootstrap objects";
+        if (block) UnmapViewOfFile(block);
+        if (ack) CloseHandle(ack);
+        CloseHandle(mapping);
+        return false;
+    }
+
+    SecureZeroMemory(block, sizeof(*block));
+    block->magic = VAPE421_BOOTSTRAP_MAGIC;
+    block->version = VAPE421_BOOTSTRAP_VERSION;
+    block->structureSize = static_cast<std::uint16_t>(sizeof(*block));
+    block->targetPid = processId;
+    block->mode = VAPE421_BOOTSTRAP_MODE_ONLINE;
+    block->controllerPort = controllerPort;
+    copyText(block->serviceHttpBase, sizeof(block->serviceHttpBase), serviceHttpBase);
+    copyText(block->serviceZeusHost, sizeof(block->serviceZeusHost), serviceZeusHost);
+    block->serviceZeusPort = serviceZeusPort;
+    block->status = VAPE421_BOOTSTRAP_STATUS_CREATED;
+
+    bool success = false;
+    HANDLE process = nullptr;
+    HANDLE remoteThread = nullptr;
+    void* remotePath = nullptr;
+    const SIZE_T pathBytes = (dllPath.size() + 1) * sizeof(wchar_t);
+    SIZE_T written = 0;
+    HMODULE kernel32 = nullptr;
+    FARPROC loadLibrary = nullptr;
+    bool remoteThreadCompleted = false;
+    enableDebugPrivilege();
+    process = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
+        PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, processId);
+    if (!process) {
+        error = L"Failed to open Minecraft process";
+        goto cleanup;
+    }
+    remotePath = VirtualAllocEx(process, nullptr, pathBytes,
+        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!remotePath || !WriteProcessMemory(process, remotePath, dllPath.c_str(),
+            pathBytes, &written) || written != pathBytes) {
+        error = L"Failed to write the Product DLL path";
+        goto cleanup;
+    }
+    kernel32 = GetModuleHandleW(L"kernel32.dll");
+    loadLibrary = kernel32 == nullptr ? nullptr
+        : GetProcAddress(kernel32, "LoadLibraryW");
+    if (!loadLibrary) {
+        error = L"Failed to resolve LoadLibraryW";
+        goto cleanup;
+    }
+    remoteThread = CreateRemoteThread(process, nullptr, 0,
+        reinterpret_cast<LPTHREAD_START_ROUTINE>(loadLibrary), remotePath, 0, nullptr);
+    if (!remoteThread) {
+        error = L"Failed to start Product DLL loading";
+        goto cleanup;
+    }
+    if (WaitForSingleObject(remoteThread, 30000) != WAIT_OBJECT_0) {
+        error = L"Product DLL loading timed out";
+        goto cleanup;
+    }
+    remoteThreadCompleted = true;
+    if (WaitForSingleObject(ack, 30000) != WAIT_OBJECT_0) {
+        error = L"Product DLL did not acknowledge the socket bootstrap";
+        goto cleanup;
+    }
+    if (block->status != VAPE421_BOOTSTRAP_STATUS_CONSUMED) {
+        error = L"Product DLL rejected the socket bootstrap";
+        goto cleanup;
+    }
+    success = true;
+
+cleanup:
+    SecureZeroMemory(block, sizeof(*block));
+    if (remoteThread) CloseHandle(remoteThread);
+    if (remotePath && process && remoteThreadCompleted) {
+        VirtualFreeEx(process, remotePath, 0, MEM_RELEASE);
+    }
+    if (process) CloseHandle(process);
+    UnmapViewOfFile(block);
+    CloseHandle(ack);
+    CloseHandle(mapping);
+    return success;
 }
 
 bool InjectionCoordinator::injectReflectiveDll(std::uint32_t processId,

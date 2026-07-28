@@ -1,6 +1,8 @@
 #include "controller_ui.h"
+#include "resource_ids.h"
 
 #include <shellapi.h>
+#include <shlwapi.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -11,6 +13,18 @@ namespace {
 constexpr float CanvasWidth = 824.0f;
 constexpr float CanvasHeight = 484.0f;
 constexpr UINT WM_CONTROLLER_STATE = WM_APP + 41;
+
+struct ResourceView {
+    const void* data{};
+    DWORD size{};
+};
+
+ResourceView resourceView(HINSTANCE instance, int resourceId) {
+    HRSRC resource = FindResourceW(instance, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
+    HGLOBAL loaded = resource == nullptr ? nullptr : LoadResource(instance, resource);
+    return {loaded == nullptr ? nullptr : LockResource(loaded),
+        resource == nullptr ? 0 : SizeofResource(instance, resource)};
+}
 
 void addRoundedPath(Gdiplus::GraphicsPath& path, float x, float y,
                     float width, float height, float radius) {
@@ -27,14 +41,20 @@ ControllerUi::ControllerUi(HINSTANCE instance, ControllerModel& model)
     : instance_(instance), model_(model) {
     Gdiplus::GdiplusStartupInput input;
     Gdiplus::GdiplusStartup(&gdiplusToken_, &input, nullptr);
-    fonts_.AddFontFile(assetPath(L"proxima-regular.ttf").c_str());
-    fonts_.AddFontFile(assetPath(L"proxima-semibold.otf").c_str());
-    logo_ = std::make_unique<Gdiplus::Image>(assetPath(L"logo.png").c_str());
-    maskTop_ = std::make_unique<Gdiplus::Image>(assetPath(L"mask-top.png").c_str());
-    maskBottom_ = std::make_unique<Gdiplus::Image>(assetPath(L"mask-bottom.png").c_str());
-    maskLeft_ = std::make_unique<Gdiplus::Image>(assetPath(L"mask-left.png").c_str());
-    maskRight_ = std::make_unique<Gdiplus::Image>(assetPath(L"mask-right.png").c_str());
-    roundedRect_ = std::make_unique<Gdiplus::Image>(assetPath(L"rounded-rect.png").c_str());
+    const ResourceView regular = resourceView(instance_, IDR_ASSET_PROXIMA_REGULAR);
+    const ResourceView semibold = resourceView(instance_, IDR_ASSET_PROXIMA_SEMIBOLD);
+    if (regular.data != nullptr && regular.size != 0) {
+        fonts_.AddMemoryFont(regular.data, static_cast<INT>(regular.size));
+    }
+    if (semibold.data != nullptr && semibold.size != 0) {
+        fonts_.AddMemoryFont(semibold.data, static_cast<INT>(semibold.size));
+    }
+    logo_ = loadImage(IDR_ASSET_LOGO);
+    maskTop_ = loadImage(IDR_ASSET_MASK_TOP);
+    maskBottom_ = loadImage(IDR_ASSET_MASK_BOTTOM);
+    maskLeft_ = loadImage(IDR_ASSET_MASK_LEFT);
+    maskRight_ = loadImage(IDR_ASSET_MASK_RIGHT);
+    roundedRect_ = loadImage(IDR_ASSET_ROUNDED_RECT);
 }
 
 ControllerUi::~ControllerUi() {
@@ -44,15 +64,24 @@ ControllerUi::~ControllerUi() {
     maskLeft_.reset();
     maskRight_.reset();
     roundedRect_.reset();
+    for (IStream* stream : imageStreams_) stream->Release();
+    imageStreams_.clear();
     if (gdiplusToken_) Gdiplus::GdiplusShutdown(gdiplusToken_);
 }
 
-std::wstring ControllerUi::assetPath(const wchar_t* name) const {
-    wchar_t path[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, path, MAX_PATH);
-    std::wstring result(path);
-    result.resize(result.find_last_of(L"\\/") + 1);
-    return result + L"assets\\" + name;
+std::unique_ptr<Gdiplus::Image> ControllerUi::loadImage(int resourceId) {
+    const ResourceView resource = resourceView(instance_, resourceId);
+    if (resource.data == nullptr || resource.size == 0) return {};
+    IStream* stream = SHCreateMemStream(static_cast<const BYTE*>(resource.data), resource.size);
+    if (stream == nullptr) return {};
+    auto image = std::make_unique<Gdiplus::Image>(stream);
+    if (image->GetLastStatus() != Gdiplus::Ok) {
+        image.reset();
+        stream->Release();
+        return {};
+    }
+    imageStreams_.push_back(stream);
+    return image;
 }
 
 int ControllerUi::run(int showCommand) {
@@ -158,7 +187,7 @@ void ControllerUi::updateFrame() {
     if (page == ControllerPage::Loading) {
         const int stage = model_.loadingStage();
         if (stage != previousLoadingStage_) previousLoadingStage_ = stage;
-        const float target = std::max(static_cast<float>(stage) / 116.0f, 0.05f);
+        const float target = std::max(static_cast<float>(stage) / 29.0f, 0.05f);
         if (loadingProgress_ < target) {
             loadingProgress_ += 0.01f * (1.0f - loadingProgress_ / target);
             loadingProgress_ = std::min(loadingProgress_, target);
@@ -229,7 +258,7 @@ LRESULT ControllerUi::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
             else if (hit(x, y, 328, 399, 160, 28))
                 model_.beginBrowserAuthentication(window_);
             else if (hit(x, y, 352, 302.4f, 112.8f, 36) &&
-                     !model_.username().empty() && !model_.password().empty()) {
+                     !model_.username().empty()) {
                 model_.submitCredentialAuthentication();
             }
             else focus_ = Focus::None;
@@ -307,8 +336,7 @@ LRESULT ControllerUi::handleMessage(UINT message, WPARAM wParam, LPARAM lParam) 
         if (model_.page() == ControllerPage::Login) {
             if (wParam == VK_TAB) {
                 focus_ = focus_ == Focus::Username ? Focus::Password : Focus::Username;
-            } else if (wParam == VK_RETURN && !model_.username().empty() &&
-                       !model_.password().empty()) {
+            } else if (wParam == VK_RETURN && !model_.username().empty()) {
                 model_.submitCredentialAuthentication();
             } else if (wParam == 'V' && (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
                        focus_ != Focus::None && OpenClipboard(window_)) {
@@ -456,7 +484,7 @@ void ControllerUi::drawLogin(Gdiplus::Graphics& graphics) {
     };
     input(183, L"Username / email", model_.username(), false, focus_ == Focus::Username);
     input(231, L"Password", model_.password(), true, focus_ == Focus::Password);
-    const bool enabled = !model_.username().empty() && !model_.password().empty();
+    const bool enabled = !model_.username().empty();
     const bool loginHover = enabled && pointerIn(352, 302.4f, 112.8f, 36);
     drawRoundedRect(graphics, 352, 302.4f, 112.8f, 36, 3,
         enabled ? (loginHover ? Gdiplus::Color(255, 49, 130, 97)
@@ -555,10 +583,10 @@ void ControllerUi::drawMinecraftSelection(Gdiplus::Graphics& graphics) {
 }
 
 void ControllerUi::drawLoading(Gdiplus::Graphics& graphics) {
-    drawLogo(graphics, 179);
+    drawLogo(graphics, 102.0f);
     const float trackX = 292.0f;
-    const float trackY = 267.0f;
-    const float trackWidth = 480.0f;
+    const float trackY = 265.0f;
+    const float trackWidth = 240.0f;
     drawRoundedRect(graphics, trackX, trackY, trackWidth, 6, 3,
         Gdiplus::Color(255, 31, 32, 32));
     drawRoundedRect(graphics, trackX, trackY,
@@ -580,7 +608,7 @@ void ControllerUi::drawLoading(Gdiplus::Graphics& graphics) {
 }
 
 void ControllerUi::drawCachePrompt(Gdiplus::Graphics& graphics) {
-    drawLogo(graphics, 179);
+    drawLogo(graphics, 102.0f);
     drawText(graphics, L"Would you like to cache local files for faster loading time?",
         180, 190, 464, 48, 15, Gdiplus::Color(255, 210, 207, 211), true,
         Gdiplus::StringAlignmentCenter);
@@ -601,7 +629,7 @@ void ControllerUi::drawCachePrompt(Gdiplus::Graphics& graphics) {
 }
 
 void ControllerUi::drawLoadingComplete(Gdiplus::Graphics& graphics) {
-    drawLogo(graphics, 179);
+    drawLogo(graphics, 102.0f);
     drawText(graphics, L"Vape has finished loading", 220, 232, 384, 30, 13,
         Gdiplus::Color(255, 218, 215, 219), true, Gdiplus::StringAlignmentCenter);
     drawText(graphics, L"Press RIGHT SHIFT(Default) while in game to open the GUI", 140, 254, 544, 24,

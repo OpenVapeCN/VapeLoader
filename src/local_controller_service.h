@@ -20,6 +20,8 @@ public:
     void setValue(std::string key, std::string value);
     int stage() const;
     bool completed() const;
+    bool failed() const;
+    std::string error() const;
 
 private:
     void acceptLoop();
@@ -38,5 +40,6 @@ private:
     bool firstRun_{true};
     std::atomic<int> stage_{0};
     std::atomic<bool> completed_{false};
+    std::atomic<bool> failed_{false};
     std::unordered_map<std::string, std::string> values_;
 };

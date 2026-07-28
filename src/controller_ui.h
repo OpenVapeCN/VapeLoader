@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <chrono>
+#include <vector>
 
 class ControllerUi {
 public:
@@ -41,7 +42,7 @@ private:
         Gdiplus::Color border = Gdiplus::Color(0, 0, 0, 0));
     bool hit(float logicalX, float logicalY, float x, float y,
         float width, float height) const;
-    std::wstring assetPath(const wchar_t* name) const;
+    std::unique_ptr<Gdiplus::Image> loadImage(int resourceId);
     void updateFrame();
     void drawTransitionMasks(Gdiplus::Graphics& graphics);
     bool pointerIn(float x, float y, float width, float height) const;
@@ -57,6 +58,7 @@ private:
     std::unique_ptr<Gdiplus::Image> maskLeft_;
     std::unique_ptr<Gdiplus::Image> maskRight_;
     std::unique_ptr<Gdiplus::Image> roundedRect_;
+    std::vector<IStream*> imageStreams_;
     Focus focus_{Focus::None};
     float scaleX_{1.0f};
     float scaleY_{1.0f};

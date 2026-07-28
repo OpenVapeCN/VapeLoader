@@ -36,6 +36,7 @@ bool LocalControllerService::start(std::string accessToken, bool cacheEnabled,
     getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length);
     {
         std::lock_guard lock(mutex_);
+        values_.clear();
         accessToken_ = std::move(accessToken);
         cacheEnabled_ = cacheEnabled;
         firstRun_ = firstRun;
@@ -43,6 +44,7 @@ bool LocalControllerService::start(std::string accessToken, bool cacheEnabled,
     }
     stage_ = 0;
     completed_ = false;
+    failed_ = false;
     listenSocket_ = static_cast<std::uintptr_t>(listener);
     running_ = true;
     thread_ = std::thread(&LocalControllerService::acceptLoop, this);
@@ -58,6 +60,13 @@ void LocalControllerService::stop() {
         listenSocket_ = InvalidSocket;
     }
     if (thread_.joinable()) thread_.join();
+    {
+        std::lock_guard lock(mutex_);
+        if (!accessToken_.empty()) {
+            SecureZeroMemory(accessToken_.data(), accessToken_.size());
+            accessToken_.clear();
+        }
+    }
     WSACleanup();
 }
 
@@ -74,6 +83,14 @@ void LocalControllerService::setValue(std::string key, std::string value) {
 int LocalControllerService::stage() const { return stage_.load(); }
 
 bool LocalControllerService::completed() const { return completed_.load(); }
+
+bool LocalControllerService::failed() const { return failed_.load(); }
+
+std::string LocalControllerService::error() const {
+    std::lock_guard lock(mutex_);
+    const auto found = values_.find("client-error");
+    return found == values_.end() ? std::string{} : found->second;
+}
 
 bool LocalControllerService::receiveLine(std::uintptr_t socketValue, std::string& value) {
     value.clear();
@@ -134,6 +151,8 @@ void LocalControllerService::acceptLoop() {
         serve(static_cast<std::uintptr_t>(client));
         shutdown(client, SD_BOTH);
         closesocket(client);
+        if (running_ && !completed_) failed_ = true;
+        if (completed_ || failed_) break;
     }
 }
 
@@ -178,6 +197,10 @@ void LocalControllerService::serve(std::uintptr_t socketValue) {
             if (!receiveLine(socketValue, terminator)) return;
             std::lock_guard lock(mutex_);
             if (!sendLine(socketValue, accessToken_)) return;
+            if (!accessToken_.empty()) {
+                SecureZeroMemory(accessToken_.data(), accessToken_.size());
+                accessToken_.clear();
+            }
             break;
         }
         case 0x26a:

@@ -32,15 +32,26 @@ cmake --build build --config Release
 build/Release/vape_v4_rewrite.exe
 ```
 
-构建过程会将 `assets` 目录复制到可执行文件旁边。
+全部 PNG 和字体资源均以 Windows `RCDATA` 编译进 EXE，运行时不需要外置 `assets` 目录。
 
-构建后可以运行仓库提供的校验脚本，检查 PE 文件和全部运行资源：
+构建后可以运行仓库提供的校验脚本，检查 PE 文件和全部内嵌运行资源：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-build.ps1
 ```
 
 GitHub Actions 会在 Windows x64 环境中执行相同的 Release 构建和校验，并保留短期构建产物。
+
+## Product DLL 双启动差异
+
+当前 Product 集成使用同目录下固定名称的 `Vape421Native.dll`，并明确区分两种启动方式：
+
+- Native Injector 直接注入：没有 Loader token handoff，DLL 的 native `gat()` 返回 `"0"`；
+- Loader 在线启动：Loader 按用户名向本地 Service 登录，通过 loopback controller socket 向 DLL 返回长期 token，并接收 `trs` 加载进度；加载完成后显示 Finished Loading 页面。
+
+controller socket 使用 decomp 已确认的 `0x269` token 请求、`0x25c` 进度和 `0x25e` 完成命令。Service 不创建 token `"0"` 的开发者账户，不校验 HWID；用户名不存在时创建账户，存在时复用已有账户和长期 token。
+
+`gat()` 保持 Java 可见方法名 `gat()Ljava/lang/String;` 并由 JNI native 实现，不新增 `native_gat()` 方法，也不修改现有 Java 在线业务。Bootstrap 共享内存只传 controller 端口和 Service 地址，不包含 token。完整协议记录位于工作区上级文档 `../loader_product_token_handoff_design.md`。
 
 ## 许可证
 
