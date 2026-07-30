@@ -150,7 +150,11 @@ void ControllerModel::refreshMinecraftProcesses() {
                     continue;
                 }
                 auto title = processTitle(entry.th32ProcessID);
-                if (title.empty() || title.find(L"Minecraft") == std::wstring::npos) {
+                const bool isMinecraftWindow =
+                    title.find(L"Minecraft") != std::wstring::npos ||
+                    title.find(L"Lunar") != std::wstring::npos ||
+                    title.find(L"Feather") != std::wstring::npos;
+                if (title.empty() || !isMinecraftWindow) {
                     continue;
                 }
                 const bool wasInjected = std::find(injected.begin(), injected.end(),
