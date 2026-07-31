@@ -583,7 +583,7 @@ void ControllerUi::drawMinecraftSelection(Gdiplus::Graphics& graphics) {
 }
 
 void ControllerUi::drawLoading(Gdiplus::Graphics& graphics) {
-    drawLogo(graphics, 102.0f);
+    drawLogo(graphics, 179.0f - 80.0f * logoPosition_);
     const float trackX = 292.0f;
     const float trackY = 265.0f;
     const float trackWidth = 240.0f;
@@ -608,7 +608,7 @@ void ControllerUi::drawLoading(Gdiplus::Graphics& graphics) {
 }
 
 void ControllerUi::drawCachePrompt(Gdiplus::Graphics& graphics) {
-    drawLogo(graphics, 102.0f);
+    drawLogo(graphics, 179.0f - 80.0f * logoPosition_);
     drawText(graphics, L"Would you like to cache local files for faster loading time?",
         180, 190, 464, 48, 15, Gdiplus::Color(255, 210, 207, 211), true,
         Gdiplus::StringAlignmentCenter);
@@ -629,7 +629,7 @@ void ControllerUi::drawCachePrompt(Gdiplus::Graphics& graphics) {
 }
 
 void ControllerUi::drawLoadingComplete(Gdiplus::Graphics& graphics) {
-    drawLogo(graphics, 102.0f);
+    drawLogo(graphics, 179.0f - 80.0f * logoPosition_);
     drawText(graphics, L"Vape has finished loading", 220, 232, 384, 30, 13,
         Gdiplus::Color(255, 218, 215, 219), true, Gdiplus::StringAlignmentCenter);
     drawText(graphics, L"Press RIGHT SHIFT(Default) while in game to open the GUI", 140, 254, 544, 24,
