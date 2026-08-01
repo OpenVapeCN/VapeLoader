@@ -1,4 +1,4 @@
-#include "controller_model.h"
+﻿#include "controller_model.h"
 #include "injection_coordinator.h"
 
 #include <windows.h>
@@ -153,7 +153,8 @@ void ControllerModel::refreshMinecraftProcesses() {
                 const bool isMinecraftWindow =
                     title.find(L"Minecraft") != std::wstring::npos ||
                     title.find(L"Lunar") != std::wstring::npos ||
-                    title.find(L"Feather") != std::wstring::npos;
+                    title.find(L"Feather") != std::wstring::npos ||
+                    title.find(L"FPSMaster") != std::wstring::npos;
                 if (title.empty() || !isMinecraftWindow) {
                     continue;
                 }
