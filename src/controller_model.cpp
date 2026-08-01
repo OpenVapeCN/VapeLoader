@@ -57,27 +57,28 @@ std::string jsonEscape(const std::string& value) {
     return result;
 }
 
-std::wstring processTitle(DWORD pid) {
-    struct Search {
-        DWORD pid;
-        std::wstring title;
-    } search{pid, {}};
+void captureWindowTitles(std::vector<MinecraftProcess>& candidates) {
     EnumWindows([](HWND window, LPARAM value) -> BOOL {
-        auto* search = reinterpret_cast<Search*>(value);
-        DWORD owner = 0;
-        GetWindowThreadProcessId(window, &owner);
-        if (owner != search->pid || !IsWindowVisible(window)) {
+        auto* candidates = reinterpret_cast<std::vector<MinecraftProcess>*>(value);
+        if (!IsWindowVisible(window) || GetWindowTextLengthW(window) == 0) {
             return TRUE;
         }
+
+        DWORD processId = 0;
+        GetWindowThreadProcessId(window, &processId);
         wchar_t title[256]{};
-        GetWindowTextW(window, title, static_cast<int>(std::size(title)));
-        if (title[0] != L'\0') {
-            search->title = title;
-            return FALSE;
+        if (processId == 0 ||
+                GetWindowTextW(window, title, static_cast<int>(std::size(title))) == 0) {
+            return TRUE;
         }
+
+        const auto candidate = std::find_if(candidates->begin(), candidates->end(),
+            [processId](const MinecraftProcess& process) {
+                return process.pid == processId && process.title.empty();
+            });
+        if (candidate != candidates->end()) candidate->title = title;
         return TRUE;
-    }, reinterpret_cast<LPARAM>(&search));
-    return search.title;
+    }, reinterpret_cast<LPARAM>(&candidates));
 }
 
 std::wstring executableDirectory() {
@@ -144,27 +145,26 @@ void ControllerModel::refreshMinecraftProcesses() {
         PROCESSENTRY32W entry{sizeof(entry)};
         if (Process32FirstW(snapshot, &entry)) {
             do {
-                std::wstring name(entry.szExeFile);
-                std::transform(name.begin(), name.end(), name.begin(), towlower);
-                if (name != L"javaw.exe" && name != L"java.exe") {
-                    continue;
-                }
-                auto title = processTitle(entry.th32ProcessID);
-                const bool isMinecraftWindow =
-                    title.find(L"Minecraft") != std::wstring::npos ||
-                    title.find(L"Lunar") != std::wstring::npos ||
-                    title.find(L"Feather") != std::wstring::npos ||
-                    title.find(L"FPSMaster") != std::wstring::npos;
-                if (title.empty() || !isMinecraftWindow) {
+                if (_wcsicmp(entry.szExeFile, L"java.exe") != 0 &&
+                        _wcsicmp(entry.szExeFile, L"javaw.exe") != 0) {
                     continue;
                 }
                 const bool wasInjected = std::find(injected.begin(), injected.end(),
                     entry.th32ProcessID) != injected.end();
-                found.push_back({entry.th32ProcessID, std::move(title), wasInjected});
+                found.push_back({entry.th32ProcessID, {}, wasInjected});
             } while (Process32NextW(snapshot, &entry));
         }
         CloseHandle(snapshot);
     }
+
+    captureWindowTitles(found);
+    found.erase(std::remove_if(found.begin(), found.end(),
+        [](const MinecraftProcess& process) { return process.title.empty(); }), found.end());
+    std::sort(found.begin(), found.end(),
+        [](const MinecraftProcess& left, const MinecraftProcess& right) {
+            return left.pid < right.pid;
+        });
+
     std::lock_guard lock(mutex_);
     minecraftProcesses_ = std::move(found);
     lastMinecraftRefresh_ = std::chrono::steady_clock::now();
